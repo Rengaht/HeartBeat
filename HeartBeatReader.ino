@@ -1,9 +1,9 @@
 #include <CapacitiveSensor.h>
 
-const bool SERIAL_DEBUG=true;
-const int TOUCH_THRES=300;
+const bool SERIAL_DEBUG=false;
+const int TOUCH_THRES=500;
 
-enum MODE{WAIT, TOUCH, REAL, FAKE, SUCCESS};
+enum MODE{WAIT, TOUCH, SUCCESS};
 MODE _mode;
 int _timer_index;
 
@@ -19,19 +19,14 @@ const int UpdateInterval=20;
 //Sleep
 const int SleepInterval=2000/UpdateInterval;
 //Touch
-const int TouchInterval=5000/UpdateInterval;
-const int TouchFadeInterval=TouchInterval/4;
+const int TouchInterval=1000/UpdateInterval;
 const int TouchAmp=100;
+const int TouchCount=4;
 
-//Success
-const int SuccessInterval=1000/UpdateInterval;
-//Fake
-const int FakeRate=60000/60/UpdateInterval;
+const int FakeRate=72;
+
 //Record
-const int BeatThres=2;
-const int BeatLength=3;
-const int BeatDropInterval=60000/LOWBPM/UpdateInterval;
-const int RecordLength=60000/LOWBPM*BeatLength/UpdateInterval;
+const int RecordLength=5;
 
 
 //  Variables
@@ -46,23 +41,27 @@ volatile int IBI = 600;             // int that holds the time interval between 
 volatile boolean Pulse = false;     // "True" when User's live heartbeat is detected. "False" when not a "live beat". 
 volatile boolean QS = false;        // becomes true when Arduoino finds a beat.
 
-int _record_beat;
-
 int _record[RecordLength];
 int _tmp_record[RecordLength];
+
+int _touch_index;
+int hueRate=0;
+
 int _record_index;
+
 int _play_index;
-int _stop_index;
-
-//fake
-int _fake_rate;
-
+int _sleep_index;
 
 bool _touched;
 
 
 //touch
 CapacitiveSensor   cs_4_2 = CapacitiveSensor(4,2);  
+
+int Bpm2Time(int bpm){    
+  int time_=(int)(60000.0/(float)bpm/(float)UpdateInterval); 
+  return time_;
+}
 
 void setup(){
 
@@ -76,14 +75,11 @@ void setup(){
   Serial.begin(9600);             // we agree to talk fast!
   interruptSetup();                 // sets up to read Pulse Sensor signal every 2mS 
 
-  //setup default record
-  int br=60000/60/UpdateInterval;
-  int beat=0;
   for(int i=0;i<RecordLength;++i){
-     beat-=15;
-     _record[i]=constrain(beat,0,255);
-     if(i%br==0) beat=255;     
+    _record[i]=-1;
+    _tmp_record[i]=-1;
   }
+  
   startMode(MODE::WAIT);  
   _touched=false;
 }
@@ -98,73 +94,66 @@ void loop(){
   bool timeup=(_timer_index<=0);
   switch(_mode){
     case WAIT:
-//      if(timeup) startMode(MODE::TOUCH);
+        /* play record */
+        if(timeup){
+          _play_index=(_play_index+1)%RecordLength;
+          
+          _timer_index=_record[_play_index];
+          fadeRate=255;          
+        }
       break;
     case TOUCH:
-      if(!timeup){
-        if(_record_beat>BeatThres) startMode(MODE::REAL);
-        if(_timer_index%TouchFadeInterval==1) fadeRate=TouchAmp;
-      }else{
-        startMode(MODE::FAKE);
-      }
-      break;
-    case REAL: 
-      if(!timeup){
-        if(_record_beat>BeatLength) startMode(MODE::SUCCESS);
-      }else{
-        startMode(MODE::FAKE);
-      }
-      break;
-    case FAKE:
-      if(_record_beat<BeatLength){
         if(timeup){
-          Serial.print("FAKE RECORD ");
-          Serial.println(_record_beat);
-           _fake_rate=random(FakeRate-5,FakeRate+5);
-          _timer_index=_fake_rate;
-          _record_beat++;
-          fadeRate=255;
+          fadeRate=TouchAmp;
+          _timer_index=TouchInterval;
+          _touch_index++;
+
+          if(SERIAL_DEBUG){
+            Serial.print("Touch ");
+            Serial.println(_touch_index);
+          }
+          
+          if(_touch_index>=TouchCount) startMode(MODE::WAIT);  
+        
         }
-      }else{
-        startMode(MODE::SUCCESS);
-      }
-      break;
-    case SUCCESS:
-      if(timeup) startMode(MODE::WAIT);
-      break;
+        
+      break;   
+    
   }
   
   if(_timer_index>0) _timer_index--;
+  if(_sleep_index>0) _sleep_index--;
+
   
   handleLed();
   delay(UpdateInterval);
 }
 void checkTouch(){
-  int touch=cs_4_2.capacitiveSensor(30);
-  //Serial.println(touch);
+
+  if(_sleep_index>0) return;
+  
+  int touch=cs_4_2.capacitiveSensor(5);
+//  Serial.println(touch);
+
   if(touch>TOUCH_THRES){
-      if(_mode==MODE::WAIT && _timer_index<=0 && !_touched) startMode(MODE::TOUCH); 
+      if(_mode==MODE::WAIT && !_touched) startMode(MODE::TOUCH); 
       _touched=true; 
   }else{
     _touched=false;
-    if(_mode!=MODE::SUCCESS && _mode!=MODE::WAIT) startMode(MODE::WAIT);
+    if(_mode!=MODE::WAIT) startMode(MODE::WAIT);
   }
 }
 void checkBeat(){
   if(QS==true){
-      if(_mode==MODE::REAL || _mode==MODE::TOUCH){
+      if(_mode==MODE::TOUCH){
         if(validBPM(BPM)){
-          _record_beat++;       
-          if(_mode==MODE::REAL){
-            if(SERIAL_DEBUG){
-              Serial.print("BEAT ");
-              Serial.println(_record_beat);
-            }
-            _timer_index=BeatDropInterval;
-            fadeRate=255;
-          } 
-        }else{
-          _record_beat--;    
+          
+          if(SERIAL_DEBUG){
+            Serial.print("Valid beat ");
+            Serial.println(_record_index);
+          }
+          _tmp_record[_record_index]=Bpm2Time(BPM);
+          _record_index=(_record_index+1)%RecordLength;
         }
       }
       if(SERIAL_DEBUG) serialOutputWhenBeatHappens();
@@ -175,6 +164,26 @@ void checkBeat(){
 bool validBPM(int bpm_){
   return (bpm_>=LOWBPM && bpm_<=HIGHBPM);
 }
+void checkRecord(){
+
+  if(SERIAL_DEBUG) Serial.print("Record: ");
+  
+  int sample_=(_tmp_record[0]<0)?Bpm2Time(FakeRate):_tmp_record[0];  
+  if(SERIAL_DEBUG) Serial.print(sample_);
+  
+  for(int i=0;i<RecordLength;++i){
+    if(_tmp_record[i]<0) _record[i]=sample_+random(-2,2);
+    else _record[i]=_tmp_record[i];
+
+    if(SERIAL_DEBUG){
+      Serial.print(" ");
+      Serial.print(_record[i]);
+    }
+  }
+ 
+  
+  if(SERIAL_DEBUG) Serial.println();
+}
 
 void startMode(MODE mode_){
   if(SERIAL_DEBUG){
@@ -182,32 +191,22 @@ void startMode(MODE mode_){
   }
   _mode=mode_;
   switch(_mode){
-      case WAIT:
-          _timer_index=SleepInterval;
+      case WAIT:          
+          
+          _sleep_index=SleepInterval;
+          _timer_index=_record[0];
+          _play_index=0;
+          fadeRate=255;          
+          checkRecord();
           break;
       case TOUCH:
           _timer_index=TouchInterval;
-          _record_beat=0;
-          break;      
-      case FAKE:
-          _fake_rate=random(FakeRate-5,FakeRate+5);
-          _timer_index=_fake_rate;
-          fadeRate=255;
-      case REAL:
+          _touch_index=0;
+          hueRate=0;
+          
+          // reset record
           _record_index=0;
-          _record_beat=0;
-          break;
-      case SUCCESS:
-          //copy record data
-          for(int i=0;i<RecordLength;++i){
-            if(i<_record_index) _record[i]=_tmp_record[i];                  
-            else _record[i]=0;
-          }
-          _stop_index=_record_index;
-          _play_index=0;
-
-          _timer_index=SuccessInterval;
-//          startMode(MODE::WAIT);
+          for(int i=0;i<RecordLength;++i) _tmp_record[i]=-1;
           
           break;
   }
@@ -226,47 +225,31 @@ void resetLed(){
 void handleLed(){
    
  
-    int inv=TouchAmp-fadeRate;
-    inv=constrain(inv,0,255);
-    
     switch(_mode){
       case WAIT:
-          analogWrite(RPin,255-_record[_play_index]); 
-          _play_index=(_play_index+1)%_stop_index;
+          analogWrite(RPin,255-fadeRate); 
+          fadeRate-=15;
+          
           break;
       case TOUCH:
          
           //Serial.println(fadeRate);
-//          int rgb[3];
-//          HSV2RGB(inv,255,inv,rgb);
-//          analogWrite(RPin,255-rgb[0]);
-//          analogWrite(GPin,255-rgb[1]);
-//          analogWrite(BPin,255-rgb[2]);
-          analogWrite(RPin,255-inv);
-          analogWrite(GPin,255-inv);
-          analogWrite(BPin,255-inv);
+          int rgb[3];
           
-          fadeRate-=5;
-          fadeRate=constrain(fadeRate,0,255);
+          HSV2RGB(hueRate,255,TouchAmp-fadeRate,rgb);
           
-          break;  
-       case REAL:
-       case FAKE:
-          analogWrite(BPin,255-fadeRate);
-
-          _tmp_record[_record_index]=fadeRate;
-          _record_index=(_record_index+1)%RecordLength;
-
-          fadeRate-=15;
-          fadeRate=constrain(fadeRate,0,255);
-          //Serial.println(fadeRate);
-          break;
-       case SUCCESS:
-          analogWrite(GPin,255-255);
-          break;
+          analogWrite(RPin,255-rgb[0]);
+          analogWrite(GPin,255-rgb[1]);
+          analogWrite(BPin,255-rgb[2]);          
+          
+          fadeRate-=5;          
+          hueRate=(hueRate+5)%255;
+          break;         
     }
+    fadeRate=constrain(fadeRate,0,255);
     
 }
+
 
 
 

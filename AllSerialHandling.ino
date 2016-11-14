@@ -16,15 +16,15 @@ void printStart(MODE mode_){
     case TOUCH:
       Serial.print("TOUCH");
       break;
-    case REAL:
-      Serial.print("REAL");
-      break;
-    case FAKE:
-      Serial.print("FAKE");
-      break;
-    case SUCCESS:
-      Serial.print("SUCCESS");
-      break;
+//    case REAL:
+//      Serial.print("REAL");
+//      break;
+//    case FAKE:
+//      Serial.print("FAKE");
+//      break;
+//    case SUCCESS:
+//      Serial.print("SUCCESS");
+//      break;
   }
   Serial.println("--------------------");
 }
